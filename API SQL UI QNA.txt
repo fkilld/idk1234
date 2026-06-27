@@ -157,3 +157,159 @@ Production limits stack several dimensions evaluated together in one decision: p
 
 Token-budget metering (LLM-style cost limits).
 Layer a cost limit on top of request limits: meter actual consumption (tokens, compute units, $) not just call count. Pattern: pre-deduct an estimate before the call (reserve max tokens) → run → reconcile the difference after (refund unused, or charge overage) so concurrent requests can't overspend the budget. Store a rolling counter in Redis keyed to the billing window (INCRBY by token count, TTL = window). Enforce both a rate (tokens/min, smooths spikes) and a quota (tokens/day or /month, billing cap). On exceed → 429 with Retry-After (rate) or 402/403 (quota exhausted). Emit a usage event per request to a durable metering pipeline (Kafka → warehouse) for invoicing/analytics — Redis is the fast gate, the event stream is the source of truth. Reconcile Redis counters against the ledger periodically to correct drift from crashes/partial failures.
+
+API — most-asked / harder questions
+
+Idempotency in distributed systems (exactly-once myth).
+Networks give you at-least-once, never true exactly-once delivery — so design for at-least-once + idempotent processing = effectively-once. Client sends a unique Idempotency-Key; server stores key → result with a status (in-progress/done) in a dedupe store. On retry: if done, return stored result; if in-progress, block or 409. Make handlers idempotent at the data layer too (unique constraints, upserts, conditional writes). Critical for payments, order creation, webhooks.
+
+Optimistic vs pessimistic locking (concurrency).
+Pessimistic: lock the row (SELECT ... FOR UPDATE) so others wait — safe under high contention, but blocks/risks deadlocks, hurts throughput. Optimistic: no lock; read a version/timestamp, on write check it's unchanged (UPDATE ... WHERE version=v), retry on mismatch — great for low contention, no blocking. Web APIs usually use optimistic (version column or ETag + If-Match → 412 on conflict). Pick by contention level and conflict cost.
+
+Async / long-running request patterns.
+Don't hold a connection for a slow job. 202 Accepted + job id, client polls GET /jobs/{id} (status → result). Or push: webhooks (server→client), SSE (one-way stream), WebSocket (bidirectional). Queue the work (Kafka/SQS) for durability + backpressure. Return a result URL on completion. Choose polling for simplicity, webhooks for efficiency, SSE/WS for live updates.
+
+Microservice communication: sync vs async.
+Sync (REST/gRPC): simple, immediate response, but tight coupling + cascading failure + latency adds up across hops. Async (message queue/event bus): decoupled, resilient, absorbs spikes, enables event-driven — but eventual consistency + harder debugging/ordering. Rule: sync for read/request-response needing an answer now; async for writes, fan-out, and cross-service workflows. Add timeouts, retries, circuit breakers on sync calls.
+
+Distributed transactions / Saga pattern.
+Two-phase commit doesn't scale across services (locks, coordinator SPOF). Saga: break a transaction into local steps, each with a compensating action; on failure, run compensations in reverse to undo. Orchestration (central coordinator drives steps) vs choreography (services react to events). Trade ACID for eventual consistency + business-level rollback. Pair with idempotency + an outbox pattern for reliable event publishing.
+
+Outbox pattern (reliable events).
+Problem: writing to DB and publishing an event aren't atomic — one can fail. Solution: in the same DB transaction, insert the event into an outbox table; a separate relay polls/CDC-streams the outbox and publishes to the broker, marking sent. Guarantees the event fires iff the data committed. Consumers dedupe via event id (at-least-once). Standard fix for the dual-write problem.
+
+API security — OWASP API top risks.
+Broken object-level authorization (BOLA/IDOR): always check the caller owns the requested object, never trust IDs in the URL. Broken auth: strong tokens, short TTL, rotation. Excessive data exposure: return only needed fields, don't rely on client to filter. Lack of rate limiting. Mass assignment: allowlist bindable fields. Injection: parameterized queries. SSRF on URL inputs. Security misconfig + verbose errors. Validate, authorize per-object, least privilege.
+
+Designing a scalable REST API (system-design favorite).
+Stateless services behind a load balancer (horizontal scale). Cache aggressively (CDN/edge for GETs, Redis for computed). DB: read replicas for read-heavy, sharding/partitioning for write-heavy, connection pooling. Async + queues for heavy work. Rate limiting + circuit breakers + bulkheads for resilience. Pagination (cursor) on list endpoints. Idempotency on writes. Observability (metrics/logs/traces). Versioning for evolution. Design for failure at every hop.
+
+Preventing retry storms / thundering herd.
+Naive retries amplify an outage (everyone retries at once → kill the recovering service). Fix: exponential backoff + jitter (randomize delays so retries spread out), cap retry count, circuit breaker to stop hammering a dead dependency, and request coalescing/single-flight (collapse duplicate concurrent requests into one). For caches, add jittered TTLs to avoid synchronized expiry.
+
+SQL — most-asked query patterns
+
+Nth highest value (e.g., 2nd highest salary).
+Robust + portable: DENSE_RANK to handle ties.
+  SELECT salary FROM (
+    SELECT salary, DENSE_RANK() OVER (ORDER BY salary DESC) rnk
+    FROM employees) t
+  WHERE rnk = 2;
+Or LIMIT/OFFSET (no ties): ORDER BY salary DESC LIMIT 1 OFFSET 1. Use DENSE_RANK when "2nd highest distinct value" matters.
+
+Top-N per group.
+ROW_NUMBER partitioned per group, filter outside.
+  SELECT * FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY dept_id ORDER BY salary DESC) rn
+    FROM employees) t
+  WHERE rn <= 3;
+ROW_NUMBER (arbitrary tie-break) vs RANK (ties share rank, gaps) vs DENSE_RANK (ties share, no gaps) — know the difference; it's the follow-up.
+
+Find & delete duplicates (keep one).
+Find: GROUP BY the dup columns HAVING COUNT(*) > 1. Delete keeping lowest id:
+  DELETE FROM t WHERE id NOT IN (
+    SELECT MIN(id) FROM t GROUP BY email);
+Or ROW_NUMBER() OVER (PARTITION BY email ORDER BY id) and delete where rn > 1. Add a unique constraint after to prevent recurrence.
+
+Employees earning more than their manager (self-join).
+  SELECT e.name FROM employees e
+  JOIN employees m ON e.manager_id = m.id
+  WHERE e.salary > m.salary;
+Classic self-join test — same table aliased twice.
+
+Running total / cumulative sum.
+  SELECT date, amount,
+    SUM(amount) OVER (ORDER BY date
+      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_total
+  FROM transactions;
+Partition (PARTITION BY account) for per-group running totals. Window frame clause is the key detail.
+
+Period-over-period (LAG/LEAD).
+  SELECT month, revenue,
+    revenue - LAG(revenue) OVER (ORDER BY month) AS mom_change
+  FROM monthly;
+LAG = previous row, LEAD = next; great for growth/delta questions.
+
+EXISTS vs IN vs JOIN.
+IN: fine for small static lists; with a subquery returning NULLs, NOT IN breaks (returns no rows). EXISTS: short-circuits on first match, handles NULLs safely, often better for correlated existence checks. JOIN: when you need columns from the other table (but can multiply rows). Rule: existence check → EXISTS; need other table's data → JOIN; small literal set → IN.
+
+UNION vs UNION ALL.
+UNION removes duplicates (extra sort/dedupe cost). UNION ALL keeps all rows, faster — use it when you know there are no dups or don't care. Interviewers check you default to UNION ALL for performance when dedup isn't needed.
+
+DELETE vs TRUNCATE vs DROP.
+DELETE: row-by-row, WHERE-able, logged, fires triggers, transactional/rollback-able, keeps table. TRUNCATE: deallocates pages, fast, resets identity, minimal logging, no WHERE, usually can't be rolled back per-row. DROP: removes the table structure entirely. Speed: TRUNCATE > DELETE for full wipes.
+
+Clustered vs non-clustered index.
+Clustered: defines the physical row order; one per table (often the PK); range scans + ordered reads are fast since data is the leaf. Non-clustered: separate structure with pointers/row-locators to the data; many per table; add a covering index (INCLUDE columns) to satisfy a query from the index alone (index-only scan). Too many indexes slow writes.
+
+Optimistic concurrency in SQL.
+Add a version/rowversion column; update conditionally:
+  UPDATE accounts SET balance=?, version=version+1
+  WHERE id=? AND version=?;
+If 0 rows affected → someone else updated it → reload and retry. Avoids locks; standard for web apps. Pessimistic alternative: SELECT ... FOR UPDATE inside a transaction.
+
+Scaling reads/writes: replicas, partitioning, sharding.
+Read replicas: offload reads, async replication → read-your-writes lag. Partitioning: split one table by range/list/hash within a DB (prune scans, easier maintenance). Sharding: spread data across DBs by a shard key — scales writes, but cross-shard joins/transactions are hard; pick the shard key carefully (even distribution, avoid hotspots). Add caching before sharding.
+
+UI / JS — most-asked / harder questions
+
+React reconciliation & keys.
+On state change React builds a new virtual DOM tree and diffs it against the old (reconciliation), patching only changed real DOM nodes. Keys tell it which list items are stable across renders — wrong/index keys cause remounts, lost state, and bugs on reorder/insert. Use stable unique ids as keys, never array index for dynamic lists.
+
+useEffect pitfalls (stale closures, deps, cleanup).
+Effect captures the variables from its render (closure) — stale if deps are wrong. Include every value used in the dependency array (or the linter warns). Return a cleanup function to cancel subscriptions/timers/requests and avoid leaks/race conditions. Empty deps = run once on mount. Don't put objects/functions in deps without memoizing them (they're new each render → infinite loops).
+
+Controlled vs uncontrolled components.
+Controlled: React state is the source of truth (value + onChange) — predictable, validate-on-change, but re-renders per keystroke. Uncontrolled: DOM holds the value, read via ref — less code, fewer renders, harder to validate live. Default to controlled for forms needing validation/conditional logic; uncontrolled for simple/perf-sensitive inputs.
+
+Event loop, microtasks vs macrotasks.
+Single-threaded JS runs the call stack, then drains all microtasks (Promise callbacks, queueMicrotask), then one macrotask (setTimeout, I/O), repeat. Microtasks always run before the next macrotask/render. This is why a resolved Promise's .then runs before a setTimeout(0). Common trap question with ordering of console logs.
+
+Closures (the #1 JS question).
+A function retains access to its lexical scope even after the outer function returns. Powers private state, currying, memoization, event handlers. Classic bug: var in a loop shares one binding (all callbacks see the final value) — fix with let (per-iteration binding) or an IIFE. Closures also cause leaks if they capture large objects that never release.
+
+Promise.all vs race vs allSettled vs any.
+all: resolves when all resolve, rejects fast on first rejection (lose other results). allSettled: waits for all, returns every status (never short-circuits) — use when you want all outcomes. race: settles on the first to settle (resolve or reject) — timeouts. any: first to fulfill, ignores rejections until all fail. Pick by whether one failure should abort the batch.
+
+Debounce vs throttle — and implementing debounce.
+(See basics above for when.) Implementation: store a timer in a closure; on each call clear the previous timer and set a new one for delay ms — only the last call in a quiet period fires.
+  function debounce(fn, ms){let t; return (...a)=>{clearTimeout(t); t=setTimeout(()=>fn(...a), ms);};}
+Throttle instead tracks last-run time and skips calls within the interval. Writing these from scratch is a frequent live task.
+
+Web security: XSS vs CSRF.
+XSS: attacker injects script that runs in the victim's browser (steals tokens/DOM) — defend with output encoding, sanitization, CSP, framework auto-escaping; avoid dangerouslySetInnerHTML. CSRF: tricks an authenticated browser into making an unwanted request using its cookies — defend with anti-CSRF tokens, SameSite cookies, and checking Origin/Referer. XSS = injected code; CSRF = forged request. Know both defenses.
+
+Storage: localStorage vs sessionStorage vs cookies.
+localStorage: ~5MB, persists, same-origin, JS-accessible, not sent to server — app state/prefs. sessionStorage: same but cleared on tab close. Cookies: tiny (~4KB), auto-sent with every request, server-readable — use HttpOnly + Secure + SameSite for auth tokens (HttpOnly blocks JS/XSS theft). Don't store sensitive tokens in localStorage (XSS-readable).
+
+CSR vs SSR vs SSG vs hydration.
+CSR: browser renders from JS — fast nav, slow first paint, weak SEO. SSR: server renders HTML per request — fast first paint + SEO, more server load. SSG: pre-render at build — fastest, but static/needs rebuild. Hydration: client attaches JS event handlers to server-rendered HTML to make it interactive. Modern stacks mix (per-route choice, streaming SSR, partial hydration). Choose by SEO/freshness/interactivity needs.
+
+Core Web Vitals / frontend performance.
+LCP (largest contentful paint — load speed), CLS (cumulative layout shift — visual stability), INP/FID (interactivity). Improve: code-split + lazy-load, optimize/lazy images, preconnect/preload critical assets, minimize render-blocking CSS/JS, cache (CDN, service worker), reserve space to avoid shifts, virtualize long lists, debounce expensive handlers. Measure with Lighthouse/RUM before optimizing.
+
+Scenario / system-design block
+
+How to drive any API system-design round.
+1) Clarify: functional requirements, scale (RPS, read:write ratio, data size), latency/consistency SLAs. 2) Define the API contract (endpoints, payloads, status codes). 3) Data model + storage choice (SQL vs NoSQL, indexes, keys). 4) High-level architecture (LB → stateless services → cache → DB → queue). 5) Scale the bottleneck (caching, replicas, sharding, async). 6) Address cross-cutting: auth, rate limiting, idempotency, observability, failure modes. Always state tradeoffs out loud — interviewers grade reasoning, not the "right" answer.
+
+Design a URL shortener.
+Contract: POST /urls {long_url} → {short_code}; GET /{code} → 301 redirect. ID generation: base62-encode an auto-increment/snowflake id (short, collision-free) or hash + collision check. Storage: key-value (code → long_url), read-heavy → cache hot codes in Redis, read replicas. Redirect: 301 (permanent, cacheable) vs 302 (lets you count clicks). Scale: codes are immutable → CDN/edge-cacheable; analytics via async event stream (don't block the redirect). Custom aliases need a uniqueness check. ~7 base62 chars ≈ 3.5T URLs.
+
+Design a rate-limited payment endpoint.
+Contract: POST /payments with Idempotency-Key header. Flow: validate → check idempotency store (return prior result if key seen) → rate-limit per user/card (Redis token bucket) → reserve funds → call processor → persist result keyed by idempotency key → emit event (outbox). Correctness: idempotency prevents double-charge on retry; optimistic locking / unique constraint on (idempotency_key) at the DB; fail-closed rate limiting (reject if Redis down — protect money path). Async: settlement/webhooks via queue; saga + compensation if a downstream step fails. Strong consistency, audit log everything.
+
+Design a notification / fan-out service.
+Contract: POST /notify {users, channel, payload}. Architecture: API enqueues to a broker (Kafka/SQS) → workers consume and deliver per channel (push/email/SMS) → provider adapters. Fan-out: for one event to many users, write to a queue and let workers parallelize; dedupe by notification id (at-least-once). Reliability: retries + backoff, dead-letter queue after max attempts, idempotent delivery. Scale: partition by user id, autoscale workers on queue depth. Add user preferences + rate limits to avoid spamming. This tests async + outbox + idempotency together.
+
+Design a file upload service.
+Contract: client requests POST /uploads → server returns a pre-signed S3/blob URL → client uploads directly to storage (bypass app servers, no proxying large bytes) → client calls POST /uploads/{id}/complete → server records metadata + triggers async processing (virus scan, thumbnail, transcode) via queue. Large files: multipart/chunked upload + resumable. Serve via CDN. Store metadata in SQL, blobs in object storage. Key insight interviewers want: don't stream big files through your API — pre-signed URLs + async post-processing.
+
+Design a paginated, filterable list/search API.
+Contract: GET /items?cursor=&limit=&filter=&sort=. Pagination: cursor/keyset (WHERE (sort_key,id) > (last) ORDER BY sort_key,id LIMIT n) — stable + fast at depth, avoid OFFSET on big tables. Indexing: composite index matching the sort+filter columns; covering index for hot queries. Heavy/free-text search → offload to a search engine (Elasticsearch/OpenSearch) kept in sync via CDC/events, not LIKE '%x%' on the primary DB. Cache common filter combos. Return next_cursor + has_more, never a total COUNT on huge tables.
+
+Design an idempotent checkout / order API.
+Contract: POST /orders with Idempotency-Key. Steps span services (inventory, payment, shipping) → use a Saga: reserve inventory → charge payment → create shipment; each step has a compensating undo (release inventory, refund) run in reverse on failure. Consistency: optimistic locking on stock (UPDATE ... WHERE qty>=n), outbox for reliable events, idempotency to survive client retries. Expose order status via GET /orders/{id} (async result). This single scenario exercises idempotency + locking + saga + outbox + eventual consistency — a favorite capstone.
+
+Real-time updates: polling vs SSE vs WebSocket (design choice).
+Short polling: simplest, wasteful at scale. Long polling: fewer empty responses, still HTTP. SSE: server→client stream over one HTTP connection, auto-reconnect — perfect for feeds/notifications/progress (one-way). WebSocket: full-duplex, low overhead — chat, collaborative editing, live trading. Choose by direction + frequency: one-way updates → SSE; bidirectional/interactive → WebSocket; infrequent → polling. Mention connection limits, scaling sticky connections (pub/sub layer like Redis), and fallbacks.

@@ -72,3 +72,40 @@ Azure OpenAI Service hosts GPT/embeddings with enterprise networking, RBAC, cont
 
 RAG on Azure stack.
 Azure AI Search (vector + hybrid + semantic ranking) as the retriever, Azure OpenAI for embeddings + generation, orchestrated via Prompt Flow or the AI Foundry SDK. Ground responses, add content safety guardrails, evaluate with built-in RAG metrics, and monitor groundedness/drift in production. Use managed identity end to end.
+
+MLOps concepts (most-asked / deeper)
+
+Reproducibility — how you guarantee it.
+Version everything: code (git), data (data assets / dataset versions), environment (pinned Docker + conda, registered in ACR), model (registry versions), and config/hyperparams (logged to the run). Pin random seeds. Each registered model traces back to the exact run, data, and environment that produced it. Reproducibility = you can rebuild any model from its lineage. Pipelines + IaC make the whole stack rebuildable.
+
+Champion–challenger & deployment strategies.
+Champion = current prod model; challenger = candidate. Shadow/dark deployment: send prod traffic to the challenger without serving its output — compare predictions safely. A/B test: split live traffic, measure business metrics. Canary: small % traffic, ramp on success. Blue-green: instant switch + rollback. On Azure ML: multiple deployments under one online endpoint with traffic split. Promote only if the challenger beats the champion on metrics + cost.
+
+Feature store — why and what.
+Central, versioned repository of curated features shared across training and serving — solves training-serving skew (same feature logic both paths), enables reuse, point-in-time correctness (no leakage), and online (low-latency) + offline (batch) access. Azure: Azure ML managed feature store or Feast. Ask "do we recompute features identically at train and inference?" — the feature store is the answer.
+
+Data & model versioning + rollback.
+Data: versioned data assets / snapshots so a model maps to exact training data. Model: registry auto-versions; tag stage (staging/prod). Rollback: revert the endpoint traffic split to the previous deployment (instant, since the old version is still registered/deployable). Keep N previous versions warm or quickly redeployable. Never overwrite — always new version.
+
+Monitoring strategy (full picture).
+Four layers: (1) infra/service — latency p50/p95, throughput, errors, resource use (App Insights/Azure Monitor); (2) data — schema/quality, input drift; (3) model — prediction drift, accuracy when labels arrive, feature-attribution drift (Azure ML model monitoring); (4) business — KPI impact. Alert + auto-trigger retraining on drift thresholds. Without ground-truth labels, monitor drift + proxy metrics + human review.
+
+CI/CD for ML vs traditional software.
+Adds data + model to code: pipeline tests code AND validates data (schema/quality) AND evaluates the model against a metric gate before promotion. Triggers: code commit, new data, or drift (continuous training). Stages: build/test → train/eval pipeline → register if metrics pass → deploy to staging endpoint → integration test → approval → prod. Tooling on Azure: GitHub Actions/Azure DevOps + CLI v2 + IaC, with model + data versioning for rollback.
+
+Applied / scenario block
+
+Design an end-to-end ML platform on Azure.
+Ingest (ADLS Gen2 + data assets) → feature engineering (Azure ML pipeline / feature store) → train (compute cluster, MLflow tracking, sweep for HPO) → evaluate against metric gate → register model → deploy (managed online endpoint for real-time / batch endpoint for offline) → monitor (drift + App Insights) → retrain trigger closing the loop. Cross-cutting: CI/CD (DevOps/Actions), IaC (Bicep/Terraform), managed identity + Key Vault, RBAC, cost controls (autoscale-to-0, spot VMs). Everything versioned for reproducibility + rollback.
+
+Design CI/CD for ML on Azure.
+Repo holds code + pipeline YAML + env definitions (GitOps). On PR: lint + unit tests + data validation. On merge: run the Azure ML training pipeline → evaluate → register model only if it beats the baseline gate → deploy to a staging endpoint → smoke/integration tests → manual or automated approval → deploy to prod with blue-green traffic split. Service principal/managed identity for auth, secrets in Key Vault, IaC provisions infra. Add a scheduled/drift-triggered retraining pipeline for continuous training.
+
+Design real-time inference at scale on Azure.
+Managed online endpoint (or AKS for custom networking/scale) behind autoscaling deployments; right-size GPU/CPU SKU; scale on RPS/CPU with a min instance count for latency. Optimize: model quantization/ONNX Runtime/Triton for throughput, batching where latency allows, caching, prompt caching for LLMs. Resilience: health probes, blue-green for zero-downtime updates, multi-region + Traffic Manager for HA. Observe: App Insights latency/error dashboards, autoscale tuning. Cost: scale-to-min off-peak, spot for batch paths.
+
+Design drift-triggered retraining.
+Azure ML model monitoring computes data/prediction drift on a schedule against the training baseline. On threshold breach → alert + trigger a retraining pipeline: validate new data → retrain → evaluate challenger vs current champion → register + gated deploy only if it wins (with human approval for high-stakes). Keep full lineage (data + model + code versions) for rollback. Guards against silent degradation as the world shifts.
+
+Design a production LLM/RAG app on Azure (LLMOps).
+Azure AI Search (hybrid + semantic rank) retriever + Azure OpenAI (embeddings + generation, PTU for predictable throughput). Author + version + evaluate flows in Prompt Flow / AI Foundry; built-in evals (groundedness, relevance, coherence) gate releases. Deploy flow as an online endpoint; add content safety + PII guardrails; trace + monitor groundedness/drift online; capture feedback into the eval set. Cost: model routing, caching, context trimming, PTU vs PAYG. Managed identity + private networking end to end. This is the Azure-native version of the generic RAG/LLM design.

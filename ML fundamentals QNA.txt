@@ -61,3 +61,71 @@ Labels come free from the data itself (next-token / masked-token prediction), so
 
 Train/val/test + cross-validation.
 Train fits params, val tunes hyperparams/early-stop, test is the untouched final estimate. K-fold CV averages over k splits for low-data robustness. Pitfall: data leakage (preprocessing on full set, temporal leakage, near-duplicates) — fit transforms on train only. In LLM work, watch benchmark contamination (eval data in pretraining).
+
+Classic ML algorithms (most-asked)
+
+Bagging vs boosting.
+Both ensembles reducing error. Bagging (Random Forest): train many models in parallel on bootstrap samples, average/vote — reduces variance, robust to overfitting, parallelizable. Boosting (XGBoost, LightGBM, AdaBoost): train sequentially, each model corrects the previous's errors (fit residuals/reweight) — reduces bias, higher accuracy, but overfits if unchecked and is sequential. Bagging for variance/noise; boosting for max accuracy on structured/tabular data (still the Kaggle default).
+
+Random Forest vs gradient boosting — when to pick.
+RF: parallel, hard to overfit, less tuning, good baseline, gives feature importance. GBM (XGBoost/LightGBM): usually higher accuracy on tabular, but sensitive to hyperparams (learning rate, depth, n_estimators) and slower to tune. Pick RF for a fast robust baseline; GBM when squeezing out accuracy and you can tune. Both beat deep nets on most tabular problems.
+
+Logistic regression essentials.
+Linear model through a sigmoid → probability; decision boundary is linear in feature space. Trained by minimizing log loss (cross-entropy), not MSE (non-convex + bad gradients with sigmoid). Coefficients = log-odds, interpretable. Regularize (L1/L2) to control overfit/sparsity. Strong, explainable baseline for binary classification.
+
+Decision tree splitting.
+Greedily split on the feature/threshold that most reduces impurity: Gini (1−Σpᵢ²) or entropy (−Σpᵢlog pᵢ); regression uses variance/MSE reduction. Splits until a stop criterion (depth, min samples). Pros: interpretable, no scaling needed, handles non-linearity. Con: high variance/overfits — pruning or ensembling (RF/GBM) fixes it.
+
+SVM & the kernel trick.
+Finds the max-margin hyperplane separating classes; support vectors are the boundary points. Kernel trick: implicitly map to higher-dim space (RBF, polynomial) via a kernel function so non-linearly-separable data becomes separable — without computing the mapping. C controls margin-vs-misclassification tradeoff. Strong for small/medium high-dim data; scales poorly to huge datasets.
+
+KNN & Naive Bayes.
+KNN: no training; classify by majority of k nearest neighbors (distance-based) — simple, but slow at inference and curse-of-dimensionality sensitive; scale features. Naive Bayes: applies Bayes' rule assuming feature independence — fast, works well for text/spam despite the "naive" assumption; needs little data. Both are common baseline/contrast questions.
+
+PCA / dimensionality reduction.
+PCA projects data onto orthogonal directions (principal components = eigenvectors of the covariance matrix) that capture maximum variance; keep top-k to reduce dims while retaining most variance. Use for visualization, denoising, speed, multicollinearity. Linear only — t-SNE/UMAP for non-linear visualization. Standardize first (variance-sensitive).
+
+K-means & choosing k.
+Partition into k clusters by minimizing within-cluster variance; iterate assign → recompute centroids until stable. Choose k via elbow method (inertia vs k) or silhouette score. Sensitive to init (use k-means++), scale, and assumes spherical clusters. Mention DBSCAN for arbitrary shapes/noise.
+
+Feature engineering & data prep (most-asked)
+
+Standardization vs normalization — and which models need it.
+Standardization: (x−μ)/σ → mean 0, unit variance. Normalization (min-max): scale to [0,1]. Needed by distance/gradient-based models: KNN, SVM, k-means, PCA, neural nets, logistic/linear with regularization. Not needed by tree-based models (split-invariant to scale). Fit the scaler on train only, apply to test (avoid leakage).
+
+Encoding categorical features.
+One-hot: nominal, low cardinality — no false ordinality, but dimension blowup. Label/ordinal: ordered categories. Target/mean encoding: high cardinality — encode by target mean (leak-prone; use CV/smoothing). Embeddings: very high cardinality / deep models. Frequency encoding as a cheap alternative. Pick by cardinality + whether order is meaningful + model type.
+
+Handling missing data & outliers.
+Missing: drop (if few/MCAR), impute (mean/median/mode, KNN, model-based), or add a missing-indicator flag (missingness can be signal). Outliers: detect (IQR, z-score, isolation forest), then cap/winsorize, transform (log), or remove if erroneous. Decide by mechanism (MCAR/MAR/MNAR) and model robustness — trees tolerate outliers, linear models don't.
+
+Feature selection.
+Filter (correlation, mutual information, chi²) — fast, model-agnostic. Wrapper (RFE, forward/backward) — model-driven, expensive. Embedded (L1/Lasso, tree importance) — selection during training. Goals: reduce overfitting, speed, interpretability. Watch multicollinearity (drop/aggregate correlated features; inflates variance of linear coefficients, VIF to detect).
+
+Deep learning practical (most-asked)
+
+Dropout & batchnorm at inference (gotcha).
+Dropout: randomly zero activations during training (regularization, prevents co-adaptation); at inference it's OFF — all units active, scaled appropriately. BatchNorm: uses batch mean/var during training but running (population) averages at inference. Forgetting to switch to eval mode (model.eval()) is a classic production bug → wrong predictions.
+
+Activation functions.
+Sigmoid/tanh: saturate → vanishing gradients, mostly legacy (sigmoid still for binary output). ReLU: max(0,x) — cheap, no positive saturation, default for CNNs/MLPs; dying-ReLU risk → Leaky/Parametric ReLU. GELU/SiLU: smooth, default in transformers. Softmax: multi-class output layer. Pick ReLU-family for hidden layers, task-appropriate output activation.
+
+Learning rate & schedules.
+Most important hyperparameter. Too high → diverge/oscillate; too low → slow/stuck. Warmup (ramp up early to stabilize) + decay (cosine/step/linear) is standard for transformers. Adaptive optimizers (Adam) help but still need a base LR. Use LR-range test / scheduler; watch the loss curve.
+
+Hyperparameter tuning.
+Grid search: exhaustive, exponential cost. Random search: samples the space — more efficient, finds good configs faster (most dims don't matter). Bayesian optimization: models the objective to pick promising configs — sample-efficient for expensive training. Always tune on validation/CV, not test. Early-stop weak trials to save compute.
+
+Applied / scenario block
+
+Diagnose an overfitting model (interview drill).
+Symptom: train metric ≫ val metric. Diagnose: plot learning curves (train vs val over epochs/data). Fixes in order: more/augmented data, stronger regularization (L2/dropout), reduce model complexity, early stopping, feature selection, cross-validate. If both train and val are poor → underfitting (add capacity/features, train longer, reduce regularization). Always change one lever and re-measure.
+
+Model works offline but fails in production.
+Likely causes: training-serving skew (different preprocessing/feature code paths), data drift (input distribution shifted), data leakage inflated offline scores, label delay, or covariate shift. Debug: log + compare prod feature distributions vs training, check the serving pipeline matches training transforms, re-evaluate on recent data. Prevent: shared feature pipeline/feature store, drift monitoring, retraining triggers, regression eval set.
+
+Build a fraud-detection model end to end (system thinking).
+Frame: highly imbalanced binary classification, cost-asymmetric (missing fraud ≫ false alarm). Data: features (transaction, velocity, device, historical), avoid leakage (no future info), temporal split (not random). Model: gradient boosting baseline; handle imbalance (class weights, focal loss, careful resampling). Metric: PR-AUC / recall at fixed precision, not accuracy; tune threshold by business cost. Production: low-latency scoring, drift monitoring, feedback loop on confirmed fraud, human review queue for borderline. Mention adversarial/concept drift — fraud evolves.
+
+Pick a model for a given problem (how to answer).
+Tabular + need accuracy/interpretability → gradient boosting / logistic regression. Images → CNN / pretrained vision model. Text/sequence → transformer (or fine-tune an LLM). Small data → simpler model + regularization + transfer learning. Real-time/low-latency → lightweight model / distillation. Always start with a simple baseline, measure on a proper eval split, then justify added complexity with metrics + cost/latency tradeoffs.
