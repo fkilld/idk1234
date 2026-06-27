@@ -1,0 +1,74 @@
+Azure ML platform & workspace
+
+Azure ML workspace: what it is and what it anchors.
+Top-level resource that ties together compute, datastores, registered datasets, models, environments, endpoints, jobs, and experiments. Backed by a storage account, key vault (secrets), container registry (ACR for images), and app insights (telemetry). RBAC + managed identity govern access. CLI v2 / Python SDK v2 / Studio UI are the three control surfaces; everything is an Azure resource so it inherits ARM, policy, and monitoring.
+
+Compute targets: when to use which.
+Compute Instance: single-user dev box (notebooks). Compute Cluster: autoscaling multi-node for training/batch — scales to 0 when idle, cost-efficient. Managed Online Endpoint: low-latency real-time serving. Batch Endpoint: async scoring over large datasets. AKS: bring-your-own cluster for high-scale/custom networking serving. Serverless compute (v2): on-demand training without managing a cluster.
+
+Datastores vs data assets.
+Datastore = registered connection to Azure storage (Blob, ADLS Gen2, File) holding credentials/identity, not the data. Data asset (uri_file / uri_folder / mltable) = versioned pointer to data for reproducibility and lineage. MLTable wraps schema + transforms for tabular loading. Prefer identity-based access (managed identity) over account keys.
+
+Environments.
+Versioned, reproducible execution context = base Docker image + conda/pip deps. Curated (Microsoft-maintained) for common stacks; custom for your own. Built once, cached in ACR, reused across jobs and endpoints — guarantees train/serve parity. Pin versions; treat the environment as code in the repo.
+
+Training, pipelines & experiment tracking
+
+Azure ML jobs and experiment tracking.
+A job = one run (command/sweep/pipeline) with code, environment, compute, inputs/outputs. Auto-logs metrics, params, artifacts; MLflow is the native tracking API (mlflow.log_metric/param/artifact). Experiments group runs for comparison in Studio. Outputs land in the workspace; models get registered for promotion.
+
+Azure ML pipelines.
+DAG of reusable components (each = code + env + interface) for ingest → prep → train → eval → register. Benefits: caching of unchanged steps, independent compute per step, parallelism, lineage, scheduling. Define in YAML (CLI v2) or SDK v2; publish as an endpoint or trigger from CI/CD. Components are the unit of reuse across pipelines.
+
+Hyperparameter tuning (sweep jobs).
+Sweep job wraps a command job: define search space (choice/uniform/loguniform), sampling (grid/random/Bayesian), primary metric + goal, and early-termination policy (bandit/median/truncation) to kill weak trials. Runs trials in parallel on a cluster; best run auto-surfaced for registration.
+
+AutoML — when it earns its place.
+Automated model/feature/HPO search for tabular (classification/regression/forecasting), vision, NLP. Use for fast baselines, citizen-DS scenarios, or to benchmark before custom work. At 5+ yrs: use it as a baseline and for explainability outputs, but own custom pipelines where control/cost matter.
+
+Model packaging, registry & deployment
+
+Model registry & versioning.
+Register models (MLflow, custom, Triton format) with auto-incrementing versions, tags, and lineage back to the producing run. Promote across stages/registries; an Azure ML Registry (org-level) shares models/components/environments across workspaces and regions. Drives gated promotion dev → staging → prod.
+
+Real-time deployment: managed online endpoints.
+Endpoint = stable scoring URI + auth (key/token/AAD); deployments sit behind it. Each deployment = model + environment + scoring script (init() loads model, run() scores) + instance type/count. Blue-green via traffic split (e.g., 90/10) for safe rollout; autoscale on CPU/RPS. MLflow models can deploy no-code (no scoring script).
+
+Batch endpoints.
+Async scoring of large data via compute cluster; submit a job, get outputs in a datastore. Use for scheduled/offline inference (nightly scoring, backfills) where latency doesn't matter and throughput/cost do. Parallelism configured by instance count + mini-batch size.
+
+Blue-green / canary rollout on Azure ML.
+Deploy new version as a second deployment under the same endpoint, shift a small % of traffic, watch metrics/errors, then ramp to 100% and retire old. Instant rollback by reverting the traffic split. Keeps the scoring URI stable for clients throughout.
+
+CI/CD, IaC & governance
+
+CI/CD for Azure ML.
+Azure DevOps Pipelines or GitHub Actions trigger CLI v2 / SDK jobs on commit/PR. Flow: lint+unit test → train/eval pipeline → register if metrics pass gate → deploy to staging endpoint → integration/smoke test → manual or automated approval → prod. Use service connection with managed identity/service principal; keep YAML pipeline specs and env definitions in git (GitOps).
+
+Infrastructure as code.
+Provision workspace + dependencies (storage, key vault, ACR, app insights) and compute via Bicep/ARM or Terraform. Keeps environments reproducible across dev/test/prod, enforces policy/RBAC, and enables teardown/rebuild. Pair with naming/tagging standards for cost tracking.
+
+Secrets, identity & security.
+Managed identity for Azure ML to reach storage/ACR/Key Vault without keys. Secrets in Key Vault, referenced not embedded. RBAC for least privilege; private endpoints + VNet to lock network access; customer-managed keys for encryption. Workspace can run fully network-isolated.
+
+Monitoring, drift & operations
+
+Model monitoring & data drift.
+Azure ML model monitoring compares production inference data against a training/reference baseline on schedule: data drift, prediction drift, data-quality, and feature-attribution drift. Alerts via thresholds → trigger retraining. Pair with App Insights for latency/throughput/failures. Without drift detection you silently degrade.
+
+Retraining strategy.
+Trigger on schedule, on drift signal, or on new-data volume. Automated pipeline: validate new data → retrain → eval against current prod (champion/challenger) → register + gated deploy only if it beats baseline. Keep human approval for high-stakes models. Version data + model + code for full reproducibility/rollback.
+
+Observability of deployed endpoints.
+App Insights captures request rate, latency (p50/p95), failures, and custom logs from the scoring script; metrics/logs flow to Log Analytics (Kusto queries) and Azure Monitor dashboards/alerts. Track instance utilization for autoscale tuning and cost. Log inputs/outputs (privacy-aware) for debugging and drift baselines.
+
+Cost optimization on Azure ML.
+Autoscaling clusters to 0 when idle; spot/low-priority VMs for fault-tolerant training; right-size instance SKUs; batch endpoints instead of always-on for offline scoring; pipeline step caching to skip recompute; quotas + budgets + tags for chargeback. For serving, scale-to-min on online endpoints and route by load.
+
+GenAI / LLMOps on Azure
+
+Azure OpenAI + prompt flow.
+Azure OpenAI Service hosts GPT/embeddings with enterprise networking, RBAC, content filtering, and PTU (provisioned throughput) vs pay-as-you-go. Prompt Flow (in Azure ML / AI Foundry) builds, versions, evaluates, and deploys LLM/RAG flows as endpoints; built-in evaluation (groundedness, relevance, coherence) and tracing. This is the Azure-native LLMOps loop: author → evaluate → deploy → monitor.
+
+RAG on Azure stack.
+Azure AI Search (vector + hybrid + semantic ranking) as the retriever, Azure OpenAI for embeddings + generation, orchestrated via Prompt Flow or the AI Foundry SDK. Ground responses, add content safety guardrails, evaluate with built-in RAG metrics, and monitor groundedness/drift in production. Use managed identity end to end.

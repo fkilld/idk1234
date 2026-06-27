@@ -1,0 +1,155 @@
+Explain transformer architecture: attention, multi-head attention, positional encoding. 
+Transformer: processes all tokens in parallel via attention, no recurrence. Flow: tokens → embeddings + positional encoding → stacked attention blocks → output.
+Attention: each token emits Q, K, V vectors. Score = softmax(QKᵀ/√dₖ), output = weighted sum of V. √dₖ scaling keeps gradients stable. Each token becomes a context-aware blend of the sequence.
+Multi-head: run attention h times in parallel, each on a lower-dim subspace with its own Q/K/V. Heads capture different relationships (syntax, long-range, coreference); concat + linear projection. Same total compute.
+Positional encoding: attention is order-blind, so inject position. Sinusoidal originally; RoPE in modern LLMs (rotates Q/K by position, better for relative distance and long context).
+Block: self-attention → add & norm → feed-forward → add & norm, with residuals. Decoder adds causal masking; most current LLMs are decoder-only.
+
+Difference between encoder-only, decoder-only, encoder-decoder models.
+Encoder-only (BERT, RoBERTa): bidirectional attention—every token sees all others. Great for understanding tasks: classification, NER, embeddings, retrieval. Trained with masked language modeling. Can't generate text autoregressively.
+Decoder-only (GPT, Llama, Claude): causal masking—token sees only past. Trained on next-token prediction. Generation-native; now dominant for general-purpose LLMs because they scale well and handle understanding tasks via prompting. In-context learning lives here.
+Encoder-decoder (T5, BART, original Transformer): encoder reads input bidirectionally, decoder generates while cross-attending to encoder output. Best for seq-to-seq with distinct input/output: translation, summarization. Cleaner separation of "comprehend" vs "produce."
+Pick: understanding/embeddings → encoder-only; open-ended generation + general LLM → decoder-only; structured transform of one sequence into another → encoder-decoder.
+
+How does temperature, top-k, top-p sampling affect output?
+Temperature scales logits before softmax: <1 sharpens (deterministic, safe), >1 flattens (random, creative), 0 = greedy. Top-k samples only from the k highest-probability tokens. Top-p (nucleus) samples from the smallest token set whose cumulative probability ≥ p, adapting to the distribution's shape. Use low temp + low p for factual/JSON; raise both for creative. Top-p generally preferred over top-k since it adapts per step.
+
+What is the context window and how do you handle inputs exceeding it?
+Max tokens (input + output) the model attends to in one pass; fixed by training. Exceeding it truncates or errors. Handle via: chunking + RAG to retrieve only relevant pieces, summarization/compression of history, sliding window, map-reduce over chunks, or a larger-context model. For agents/chat: trim or summarize old turns, keep system prompt + recent context.
+
+Explain tokenization (BPE, WordPiece) and its impact on cost/performance.
+Tokenization splits text into subword units. BPE (GPT) merges frequent byte pairs iteratively; WordPiece (BERT) merges by likelihood gain. Subwords balance vocab size vs sequence length—rare words split into pieces, common words stay whole. Impact: billing and context are per-token, so token-dense text (code, non-English, rare words) costs more and fills context faster. Bad tokenization inflates length and hurts latency/cost.
+
+Walk through a RAG pipeline end to end.
+Ingestion: load docs → chunk → embed → store in vector DB (+ metadata). Query time: embed query → retrieve top-k (vector/hybrid) → optionally re-rank → assemble context + query into prompt → LLM generates grounded answer → optionally cite sources. Production adds caching, guardrails, eval, and tracing.
+
+Chunking strategies and trade-offs (fixed, semantic, recursive).
+Fixed-size (token/char + overlap): simple, fast, but cuts mid-thought. Recursive: split on hierarchy (paragraph → sentence → word) until size fits—preserves structure, good default. Semantic: split where embedding similarity drops—coherent chunks but compute-heavy. Trade-off: smaller chunks = precise retrieval but lose context; larger = more context but noisy. Overlap mitigates boundary loss.
+
+Dense vs sparse retrieval; when to use hybrid search.
+Sparse (BM25/keyword): exact term match, great for rare terms, IDs, jargon; no semantic understanding. Dense (embeddings): semantic similarity, handles paraphrase/synonyms; weak on exact tokens. Hybrid combines both (e.g., reciprocal rank fusion) to get exact-match precision + semantic recall—default for production where queries mix keywords and meaning.
+
+How do you evaluate retrieval quality (recall@k, MRR, NDCG)?
+Recall@k: fraction of relevant docs in top-k—did we fetch the right context. Precision@k: fraction of top-k that's relevant. MRR: 1/rank of first relevant result—good when one right answer. NDCG: rank-weighted relevance with graded labels—best when ranking order matters. Need a labeled query→relevant-doc set; can bootstrap labels with LLM-as-judge.
+
+How do you reduce hallucination in RAG systems?
+Improve retrieval (hybrid + re-ranking, better chunking) so context is actually relevant. Prompt to answer only from context and say "I don't know" otherwise. Add citations/grounding checks. Post-hoc verify answer against retrieved docs (faithfulness eval). Lower temperature. Filter low-similarity retrievals. Constrain scope; flag when no good context found.
+
+Re-ranking: why and how (cross-encoders, Cohere rerank).
+Initial retrieval (bi-encoder/BM25) is fast but coarse—top-k often mis-ordered. Re-ranker re-scores those candidates for relevance. Cross-encoders feed query+doc together through one model for a precise score (accurate but slow, so applied only to top-k). Cohere/Voyage rerank APIs do this hosted. Pattern: retrieve 50–100 cheaply → re-rank → keep top 3–5 for the prompt.
+
+Full fine-tuning vs LoRA/QLoRA vs prompt tuning; when to pick each.
+Full FT: update all weights—max adaptation, expensive, risks forgetting, needs lots of data/compute. LoRA: train small low-rank adapter matrices, freeze base—cheap, fast, swappable, ~full quality for most tasks. QLoRA: LoRA on a 4-bit quantized base—fits big models on one GPU. Prompt/prefix tuning: learn soft prompt vectors only—tiny footprint, weaker. Default to LoRA/QLoRA; full FT only with strong reason and resources.
+
+When do you fine-tune instead of using RAG or prompting?
+Prompting first (cheapest). RAG when you need fresh/proprietary knowledge or citations. Fine-tune for behavior/format/style/domain-tone the model can't reliably follow via prompt, latency reduction (bake in behavior, shorter prompts), or specialized tasks/classification. Knowledge → RAG; behavior/format → fine-tune. Often combine: fine-tune for style + RAG for facts.
+
+Explain RLHF and DPO.
+RLHF: train a reward model on human preference pairs, then optimize the LLM with RL (PPO) to maximize reward—aligns to human preference but complex and unstable. DPO: skips the separate reward model and RL loop—directly optimizes the policy on preference pairs via a classification-style loss. Simpler, stable, cheaper; now common. Both teach "prefer A over B" from human/AI feedback.
+
+How do you build a training dataset and avoid catastrophic forgetting?
+Dataset: define task, collect high-quality diverse examples, clean/dedupe, ensure correct format and label quality, hold out eval set; quality > quantity. Avoid forgetting: use LoRA (base frozen), mix in general/original-distribution data, low learning rate, fewer epochs, regularization, and eval on prior capabilities to catch regressions.
+
+Design an agentic workflow: planning, tool use, memory, reflection.
+Planning: LLM decomposes goal into steps (upfront or iterative). Tool use: model calls functions/APIs/retrieval via structured calls; results feed back. Memory: short-term (scratchpad/context) + long-term (vector store/state). Reflection: critique its own output/errors and retry or replan. Loop until goal met or termination condition. Add a controller/state machine for routing and stop conditions.
+
+ReAct vs plan-and-execute patterns.
+ReAct: interleaves reasoning + action step by step (think → act → observe → repeat)—adaptive, handles uncertainty, but more LLM calls and can loop. Plan-and-execute: plan all steps first, then execute—fewer reasoning calls, cheaper, more predictable, but rigid if reality deviates. Use ReAct for exploratory/dynamic tasks, plan-and-execute for well-defined multi-step pipelines; hybrids replan on failure.
+
+How do you handle multi-agent orchestration (LangGraph, supervisor pattern)?
+Model the system as a graph of agents/nodes with explicit state and edges (LangGraph). Supervisor pattern: a router agent delegates subtasks to specialist agents and aggregates results. Define state schema, handoff logic, termination. Alternatives: hierarchical teams, sequential pipelines, peer collaboration. Keep agents focused, control message passing, cap iterations to prevent runaway loops.
+
+Error handling, retries, and loop/termination control in agents.
+Wrap tool calls in try/except; retry with backoff on transient failures, validate tool outputs before use. Feed errors back to the model to self-correct. Termination: max steps/iterations, max cost/tokens, goal-satisfied check, no-progress detection. Guard against infinite loops (repeat-action detection) and cascading failures with fallbacks/human handoff.
+
+MCP and tool-calling design.
+Tool calling: expose functions with clear schemas (name, description, typed params); model emits structured call, you execute and return result. MCP (Model Context Protocol): open standard to connect models to tools/data via servers, so tools are reusable across apps/clients instead of bespoke per integration. Design: small focused tools, precise descriptions, validate inputs, return concise structured results, handle errors gracefully.
+
+How do you evaluate an LLM application without ground truth?
+Reference-free LLM-as-judge on dimensions (relevance, faithfulness, coherence). RAG: faithfulness (answer grounded in context) + answer relevance + context relevance. Use rubrics/pairwise comparison, human spot-checks, user feedback signals (thumbs, edits), and guardrail/consistency checks. Build a curated eval set over time; track regressions per release.
+
+LLM-as-a-judge: setup, biases, mitigation.
+Setup: give judge model the input, output, and a clear rubric/scoring criteria; prefer pairwise or low-cardinality scales. Biases: position bias, verbosity bias, self-preference, leniency. Mitigate: randomize/swap order, use CoT reasoning before score, calibrate against human labels, ensembles, clear rubric with examples, stronger judge than the system under test.
+
+Offline vs online eval; what metrics for production.
+Offline: pre-deploy on fixed datasets—accuracy, faithfulness, retrieval metrics, regression suites in CI. Online: live traffic—latency (p50/p95), cost/token, error rate, user feedback, thumbs/acceptance, A/B test outcomes, guardrail trigger rate, drift. Offline gates releases; online catches real-world failures and drift.
+
+Detecting and measuring hallucination.
+Faithfulness check: verify each claim is supported by retrieved context (LLM-judge or NLI entailment). Self-consistency: sample multiple outputs, flag disagreement. Groundedness scoring, citation verification, fact-checking against source. Metrics: faithfulness/groundedness score, % unsupported claims, contradiction rate. Track over time as a production eval.
+
+Design a chatbot/RAG system for X scale; latency, cost, caching.
+Components: API gateway → retrieval (vector DB) → re-rank → LLM → guardrails → response, with tracing. Scale: replicate stateless services, async, queue heavy jobs. Latency: cache, smaller/faster models, streaming, parallel retrieval, p95 budget. Cost: model routing (cheap model for easy queries), prompt/semantic caching, batching, trim context. Add fallbacks, rate limits, monitoring.
+
+Prompt caching, semantic caching, batching.
+Prompt caching: reuse KV/compute for repeated prefixes (system prompt, few-shot)—cuts latency and cost on shared context. Semantic caching: return cached answer when a new query is embedding-similar to a past one—skip the LLM entirely for near-duplicates. Batching: group requests to maximize GPU throughput (offline/high-volume), trading latency for cost.
+
+Guardrails: PII, prompt injection, jailbreaks, output validation.
+Input: PII detection/redaction, prompt-injection and jailbreak classifiers, topic/scope filters. Output: schema/JSON validation, toxicity/safety checks, groundedness, format enforcement, retry on violation. Defense in depth: system-prompt hardening, separate untrusted data from instructions, allowlist tools, least privilege. Log and monitor trigger rates.
+
+Observability and tracing (Arize, LangSmith, Phoenix).
+Trace every step (spans): retrieval, prompt, LLM call, tool calls, latency, tokens, cost. Run online evals on traces (faithfulness, relevance, hallucination). Monitor drift, errors, and quality over time; alert on regressions. Arize AX / Phoenix / LangSmith give the dashboards, eval pipelines, and trace inspection to debug and improve production agents.
+
+Cost optimization: model routing, distillation, quantization.
+Routing: send easy queries to a small/cheap model, hard ones to a large model (classifier or cascade). Distillation: train a smaller model on a larger one's outputs to retain quality at lower cost. Quantization: lower weight precision (8/4-bit) to shrink memory and speed inference with minimal quality loss. Plus caching, prompt trimming, batching.
+
+Streaming, rate limits, fallback strategies.
+Streaming: send tokens as generated for lower perceived latency. Rate limits: client-side throttling, queues, exponential backoff, token-bucket; respect provider limits. Fallbacks: retry → alternate model/provider → cached/default response → graceful degradation. Circuit breakers and timeouts to avoid cascading failure.
+
+Few-shot, CoT, self-consistency, structured output enforcement.
+Few-shot: in-context examples to set format/behavior. CoT: prompt step-by-step reasoning for complex tasks. Self-consistency: sample multiple CoT paths, take majority answer—boosts accuracy at higher cost. Structured output: enforce schema via function calling, JSON mode, or constrained/grammar decoding so output is reliably parseable.
+
+How do you make outputs deterministic/JSON-reliable?
+Temperature 0 (near-deterministic, not guaranteed). Use native JSON mode / function calling / structured output APIs or constrained decoding against a schema. Provide a clear schema + few-shot example. Validate with Pydantic; on failure, re-prompt with the error (retry loop). Avoid asking for prose around the JSON.
+
+Walk me through a GenAI project you owned end to end.
+Frame STAR: problem/business goal → your design (data, retrieval, model, agentic flow, evals) → tradeoffs and decisions → metrics/impact → challenges and how you solved them. Emphasize ownership, production concerns (latency, cost, guardrails, observability), and measurable outcome. Use a real project (e.g., a RAG/agentic reconciliation workflow with LangGraph + Arize evals).
+
+A time a model failed in production—how you debugged it.
+Structure: symptom (bad/hallucinated output, latency spike) → how detected (traces, eval drop, user report) → root-cause via tracing (retrieval miss? prompt? model change? bad data?) → fix (chunking, re-rank, prompt, guardrail) → verification (eval + monitoring) → prevention (regression test, alert). Shows systematic, data-driven debugging.
+
+How you keep up with a fast-moving field.
+Papers (arXiv, key labs), newsletters, model release notes, practitioner blogs, and hands-on experimentation. Build small prototypes with new techniques, follow eval/benchmarks critically, and engage with community (X, GitHub, Discord). Emphasize filtering hype and validating what actually works in production.
+
+Implement a basic RAG retriever / cosine similarity from scratch.
+```python
+import numpy as np
+
+def cosine_sim(a, b):
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+
+def retrieve(query_emb, doc_embs, docs, k=3):
+    scores = [cosine_sim(query_emb, d) for d in doc_embs]
+    top = np.argsort(scores)[::-1][:k]
+    return [(docs[i], scores[i]) for i in top]
+```
+
+Parse and validate LLM JSON output with retries.
+```python
+import json
+from pydantic import BaseModel, ValidationError
+
+class Out(BaseModel):
+    name: str
+    score: float
+
+def parse(call_llm, prompt, retries=3):
+    for _ in range(retries):
+        raw = call_llm(prompt)
+        try:
+            return Out(**json.loads(raw))
+        except (json.JSONDecodeError, ValidationError) as e:
+            prompt = f"{prompt}\n\nInvalid output: {raw}\nError: {e}\nReturn valid JSON only."
+    raise ValueError("Failed after retries")
+```
+
+Implement a token-aware text chunker.
+```python
+def chunk(text, tokenizer, max_tokens=500, overlap=50):
+    toks = tokenizer.encode(text)
+    chunks, start = [], 0
+    while start < len(toks):
+        end = start + max_tokens
+        chunks.append(tokenizer.decode(toks[start:end]))
+        start += max_tokens - overlap
+    return chunks
+```

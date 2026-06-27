@@ -1,0 +1,1 @@
+For technical/interview explanations: answer at the depth a senior engineer would give in an interview—core concepts only, no hand-holding. Use compact labeled points, formulas where they're the clearest expression, and skip background a 5-year engineer already knows. No intro, no recap.

@@ -1,0 +1,63 @@
+Core ML theory
+
+Bias-variance tradeoff.
+Error = bias² + variance + irreducible noise. High bias = underfit (too simple, wrong assumptions); high variance = overfit (memorizes noise, sensitive to data). More capacity/less regularization → ↓bias ↑variance. Manage via model complexity, regularization, more data, ensembling. In LLMs the framing shifts (overparameterized models generalize despite zero train loss — double descent), but the tradeoff still governs small fine-tuning sets.
+
+Overfitting: detect and prevent.
+Detect: train loss ≪ val loss, or val metric rising then falling. Prevent: more/augmented data, regularization (L2, dropout), early stopping, simpler model, cross-validation. Fine-tuning analogs: LoRA (fewer trainable params), low LR, fewer epochs, hold-out eval.
+
+L1 vs L2 regularization.
+L1 (Lasso, +λ‖w‖₁): drives weights to exactly 0 → sparse, feature selection. L2 (Ridge, +λ‖w‖₂²): shrinks weights smoothly, never exactly 0, handles correlated features. Elastic net = both. L2 ≈ weight decay (the standard in deep nets / AdamW).
+
+Generative vs discriminative models.
+Discriminative learns P(y|x) directly (logistic regression, BERT classifier) — better when you only need the decision boundary. Generative learns P(x,y) or P(x) (naive Bayes, GPT, diffusion) — can sample new data. LLMs are generative: trained to model P(next token | context).
+
+Optimization & training
+
+Gradient descent variants.
+Batch: full dataset per step — stable, slow, memory-heavy. SGD: one sample — noisy, escapes local minima, slow convergence. Mini-batch: the practical default (32–1024). Update: w ← w − η∇L. η too high → divergence; too low → slow/stuck.
+
+Backpropagation.
+Reverse-mode autodiff: forward pass caches activations, backward pass applies chain rule to compute ∂L/∂w layer by layer, reusing downstream gradients. Cost ≈ one forward pass. Vanishing/exploding gradients arise from repeated multiplication through depth — mitigated by residual connections, normalization, careful init.
+
+Adam / AdamW.
+Adam = momentum (1st moment) + per-parameter adaptive LR (2nd moment, RMSProp-style). m̂, v̂ bias-corrected; w ← w − η·m̂/(√v̂+ε). AdamW decouples weight decay from the gradient update (correct L2) — standard for transformers. Pair with warmup + cosine decay.
+
+Vanishing/exploding gradients.
+Vanishing: gradients shrink through depth/time → early layers stop learning (sigmoid/tanh saturation, deep RNNs). Exploding: blow up → NaNs. Fixes: ReLU/GELU, residuals, LayerNorm/BatchNorm, proper init (Xavier/He), gradient clipping, LSTM gating (pre-transformer).
+
+Normalization: BatchNorm vs LayerNorm.
+BatchNorm normalizes across the batch per feature — depends on batch stats, weak for small/variable batches and sequences. LayerNorm normalizes across features per token — batch-independent, the transformer default. RMSNorm (Llama) drops mean-centering for speed.
+
+Loss functions & metrics
+
+Cross-entropy loss.
+−Σ y·log(ŷ). Penalizes confident wrong predictions heavily; for classification it pairs with softmax. LLM training = token-level cross-entropy (= maximize log-likelihood of next token). Perplexity = exp(mean CE) — the intrinsic LM metric.
+
+Pick a classification metric.
+Accuracy fails on imbalance. Precision = TP/(TP+FP) — cost of false alarms (spam). Recall = TP/(TP+FN) — cost of misses (disease, fraud). F1 = harmonic mean — balance. ROC-AUC = ranking quality across thresholds (balanced); PR-AUC better under heavy imbalance. Choose by the cost of each error type.
+
+Softmax + why temperature.
+softmax(zᵢ) = e^{zᵢ/T}/Σe^{zⱼ/T} → probability distribution. T<1 sharpens, T>1 flattens — exactly the LLM sampling knob. Numerically: subtract max(z) before exp to avoid overflow.
+
+Representation & data
+
+Word2Vec / embeddings intuition.
+Map tokens to dense vectors where geometric closeness ≈ semantic similarity ("king−man+woman≈queen"). Word2Vec (skip-gram/CBOW) learns from co-occurrence; static (one vector per word). Transformers give contextual embeddings (same word, different vector by context) — the basis for modern retrieval/RAG.
+
+Curse of dimensionality.
+As dims grow, data sparsifies, distances concentrate (everything ~equidistant), volume explodes → distance metrics degrade. Why we use dimensionality reduction (PCA), learned low-dim embeddings, and ANN indexes (HNSW/IVF) instead of brute-force search in vector DBs.
+
+Handle class imbalance.
+Resampling (SMOTE/oversample minority, undersample majority), class-weighted loss, threshold tuning, focal loss, and evaluate with PR-AUC/F1 not accuracy. For LLM fine-tuning: balance or weight examples so rare intents aren't drowned out.
+
+Bridge questions (classic ML → GenAI)
+
+Why did transformers replace RNNs/LSTMs?
+RNNs process sequentially (no parallelism, slow training) and lose long-range signal through vanishing gradients despite gating. Attention is parallel over the sequence and gives O(1) path length between any two tokens → captures long-range dependencies and scales on GPUs. Cost: O(n²) attention vs O(n) recurrence.
+
+Self-supervised learning — why it unlocked LLMs.
+Labels come free from the data itself (next-token / masked-token prediction), so training scales to internet-sized corpora without annotation. Pretrain general representations self-supervised → adapt with small labeled sets (fine-tune) or none (prompting). This is the whole pretrain→adapt paradigm.
+
+Train/val/test + cross-validation.
+Train fits params, val tunes hyperparams/early-stop, test is the untouched final estimate. K-fold CV averages over k splits for low-data robustness. Pitfall: data leakage (preprocessing on full set, temporal leakage, near-duplicates) — fit transforms on train only. In LLM work, watch benchmark contamination (eval data in pretraining).
